@@ -1,8 +1,10 @@
-use chrono::{DateTime, Duration, Local};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::fs;
 use std::process::Command;
+
+const BUFFER_FILE_PATH: &str = "/tmp/internet-speed.toml";
 
 fn get_seconds_since_file_modified(file: &str) -> Result<u64, String> {
     let fmeta = match fs::metadata(file) {
@@ -39,24 +41,7 @@ fn get_seconds_since_file_modified(file: &str) -> Result<u64, String> {
     Ok(elapsed)
 }
 
-#[derive(Debug, Deserialize)]
-struct Fast {
-    downloadSpeed: u32,
-    downloaded: u32,
-    latency: u32,
-    bufferBloat: u32,
-    userLocation: String,
-    userIp: String,
-}
-
-fn main() {
-    // Check if there's an up to date buffered file
-    const BUFFER_FILE_PATH: &str = "/tmp/flux";
-    let _elap_time = match get_seconds_since_file_modified(BUFFER_FILE_PATH) {
-        Ok(value) => println!("Result: {}", value),
-        Err(error) => println!("Error: {}", error),
-    };
-
+fn get_internet_info() -> Result<Fast, String> {
     println!("Checking internet speed. Please wait...");
     let output = Command::new("fast")
         .arg("--json")
@@ -64,19 +49,117 @@ fn main() {
         .expect("Failed to execute command");
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("\tCommand failed:\n{}", &stderr);
-        return;
+        return Err(format!("\tCommand failed:\n{}", &stderr));
     }
 
     let o = String::from_utf8_lossy(&output.stdout);
-    // let o = r#"{ "downloadSpeed": 330, "downloaded": 310, "latency": 17, "bufferBloat": 143, "userLocation": "Clearwater, US", "userIp": "72.187.132.254" }"#;
+    let o = r#"{ "downloadSpeed": 100, "latency": 100 }"#;
     let f: Fast = match serde_json::from_str(&o) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("Failed to parse JSON: {}", e);
-            return;
+            return Err(format!("Failed to parse JSON: {}", e));
         }
     };
 
-    println!("Download speed: {} Mbps", f.downloadSpeed);
+    Ok(f)
+}
+
+fn write_buffered_file(file: &str, info: &Fast) -> Result<(), String> {
+    let toml = match toml::to_string(&info) {
+        Ok(t) => t,
+        Err(e) => {
+            return Err(format!("Failed to convert to TOML: {}", e));
+        }
+    };
+    match fs::write(file, toml) {
+        Ok(_) => (),
+        Err(e) => {
+            return Err(format!("Failed to write buffered file: {}", e));
+        }
+    }
+    Ok(())
+}
+
+fn get_new_internet_info() -> Result<Fast, String> {
+    let info = match get_internet_info() {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(format!("{}", e));
+        }
+    };
+    match write_buffered_file(BUFFER_FILE_PATH, &info) {
+        Ok(_) => (),
+        Err(e) => {
+            return Err(format!("{}", e));
+        }
+    }
+    Ok(info)
+}
+
+fn get_buffered_internet_info() -> Result<Fast, String> {
+    let file = match fs::read_to_string(BUFFER_FILE_PATH) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(format!("{}", e));
+        }
+    };
+    let info = match toml::from_str(&file) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(format!("{}", e));
+        }
+    };
+    Ok(info)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Fast {
+    downloadSpeed: u32,
+    latency: u32,
+}
+
+fn main() {
+    // Check if there's an up to date buffered file
+    let info = match get_seconds_since_file_modified(BUFFER_FILE_PATH) {
+        Ok(elapsed) => {
+            match elapsed {
+                0..=86400 => {
+                    println!("Using buffered file: elapse = {}", elapsed);
+                    let info = match get_buffered_internet_info() {
+                        Ok(f) => f,
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            return;
+                        }
+                    };
+                    info
+                }
+                _ => {
+                    println!("Buffered file is out of date");
+                    let info = match get_new_internet_info() {
+                        Ok(f) => f,
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            return;
+                        }
+                    };
+                    info
+                }
+            }
+        }
+        Err(e) => {
+            println!("Buffered file doesn't exist");
+            let info = match get_new_internet_info() {
+                Ok(i) => i,
+                Err(e2) => {
+                    eprintln!("File didn't exist: Error: {}. Tried to create it: Error: {}", e, e2);
+                    return;
+                }
+            };
+            info
+        }
+    };
+
+    println!("\tDownload speed: {} Mbps", info.downloadSpeed);
+    println!("\tLatency: {} ms", info.latency);
 }
