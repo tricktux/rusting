@@ -53,7 +53,7 @@ fn get_internet_info() -> Result<Fast, String> {
     }
 
     let o = String::from_utf8_lossy(&output.stdout);
-    let o = r#"{ "downloadSpeed": 100, "latency": 100 }"#;
+    // let o = r#"{ "downloadSpeed": 100, "latency": 100 }"#;
     let f: Fast = match serde_json::from_str(&o) {
         Ok(f) => f,
         Err(e) => {
