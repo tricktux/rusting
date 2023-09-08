@@ -42,7 +42,7 @@ fn get_seconds_since_file_modified(file: &str) -> Result<u64, String> {
 }
 
 fn get_internet_info() -> Result<Fast, String> {
-    println!("Checking internet speed. Please wait...");
+    // println!("Checking internet speed. Please wait...");
     let output = Command::new("fast")
         .arg("--json")
         .output()
@@ -124,7 +124,7 @@ fn main() {
         Ok(elapsed) => {
             match elapsed {
                 0..=86400 => {
-                    println!("Using buffered file: elapse = {}", elapsed);
+                    // println!("Using buffered file: elapse = {}", elapsed);
                     let info = match get_buffered_internet_info() {
                         Ok(f) => f,
                         Err(e) => {
@@ -135,7 +135,7 @@ fn main() {
                     info
                 }
                 _ => {
-                    println!("Buffered file is out of date");
+                    // println!("Buffered file is out of date");
                     let info = match get_new_internet_info() {
                         Ok(f) => f,
                         Err(e) => {
@@ -148,7 +148,7 @@ fn main() {
             }
         }
         Err(e) => {
-            println!("Buffered file doesn't exist");
+            // println!("Buffered file doesn't exist");
             let info = match get_new_internet_info() {
                 Ok(i) => i,
                 Err(e2) => {
@@ -160,6 +160,12 @@ fn main() {
         }
     };
 
-    println!("\tDownload speed: {} Mbps", info.downloadSpeed);
-    println!("\tLatency: {} ms", info.latency);
+    let icon = match info.latency {
+        0..=50 => r#"%{F#3cb703}%{F-}"#,
+        51..=150 => r#"%{F#f9dd04}%{F-}"#,
+        _ => r#"%{F#d60606}%{F-}"#,
+    };
+    
+
+    println!("{icon} {} ms  {} Mbps", info.latency, info.downloadSpeed);
 }
