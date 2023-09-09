@@ -1,4 +1,6 @@
 use chrono::{DateTime, Local};
+use log::{info, warn, error};
+use fern::Dispatch;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::fs;
@@ -53,7 +55,7 @@ fn get_internet_info() -> Result<Fast, String> {
     }
 
     let o = String::from_utf8_lossy(&output.stdout);
-    // let o = r#"{ "downloadSpeed": 100, "latency": 100 }"#;
+    info!("Command output: {}", o);
     let f: Fast = match serde_json::from_str(&o) {
         Ok(f) => f,
         Err(e) => {
@@ -119,27 +121,39 @@ struct Fast {
 }
 
 fn main() {
+    Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "[{}] {} - {}",
+                record.level(),
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                message
+            ))
+        })
+        .chain(fern::log_file("/tmp/output.log").expect("Failed to open log file"))
+        .apply()
+        .expect("Failed to initialize logger");
     // Check if there's an up to date buffered file
     let info = match get_seconds_since_file_modified(BUFFER_FILE_PATH) {
         Ok(elapsed) => {
             match elapsed {
                 0..=86400 => {
-                    // println!("Using buffered file: elapse = {}", elapsed);
+                    info!("Using buffered file: elapse = {}", elapsed);
                     let info = match get_buffered_internet_info() {
                         Ok(f) => f,
                         Err(e) => {
-                            eprintln!("{}", e);
+                            error!("{}", e);
                             return;
                         }
                     };
                     info
                 }
                 _ => {
-                    // println!("Buffered file is out of date");
+                    info!("Buffered file is out of date");
                     let info = match get_new_internet_info() {
                         Ok(f) => f,
                         Err(e) => {
-                            eprintln!("{}", e);
+                            error!("{}", e);
                             return;
                         }
                     };
@@ -148,11 +162,11 @@ fn main() {
             }
         }
         Err(e) => {
-            // println!("Buffered file doesn't exist");
+            info!("Buffered file doesn't exist");
             let info = match get_new_internet_info() {
                 Ok(i) => i,
                 Err(e2) => {
-                    eprintln!("File didn't exist: Error: {}. Tried to create it: Error: {}", e, e2);
+                    error!("File didn't exist: Error: {}. Tried to create it: Error: {}", e, e2);
                     return;
                 }
             };
