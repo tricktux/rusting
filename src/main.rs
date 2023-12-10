@@ -1,12 +1,18 @@
 use chrono::{DateTime, Local};
-use log::{info, warn, error};
-use fern::Dispatch;
+use log::{error, info};
+use log4rs::{
+    append::file::FileAppender,
+    config::{Appender, Config, Root},
+    encode::pattern::PatternEncoder,
+};
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::env;
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 
-const BUFFER_FILE_PATH: &str = "/tmp/internet-speed.toml";
+const BUFFER_FILE_PATH: &str = ".polybar-internet-speed.toml";
 
 fn get_seconds_since_file_modified(file: &str) -> Result<u64, String> {
     let fmeta = match fs::metadata(file) {
@@ -82,6 +88,23 @@ fn write_buffered_file(file: &str, info: &Fast) -> Result<(), String> {
     Ok(())
 }
 
+fn get_buffered_filename() -> Result<String, String> {
+    let xdg = match env::var("XDG_CACHE_HOME") {
+        Ok(x) => x,
+        Err(e) => {
+            return Err(format!("Failed to get XDG_CACHE_HOME: {}", e));
+        }
+    };
+    let path = PathBuf::from(xdg).join(BUFFER_FILE_PATH);
+    let file = match path.to_str() {
+        Some(f) => f,
+        None => {
+            return Err(format!("Failed to convert path to string"));
+        }
+    };
+    Ok(file.to_string())
+}
+
 fn get_new_internet_info() -> Result<Fast, String> {
     let info = match get_internet_info() {
         Ok(f) => f,
@@ -89,7 +112,13 @@ fn get_new_internet_info() -> Result<Fast, String> {
             return Err(format!("{}", e));
         }
     };
-    match write_buffered_file(BUFFER_FILE_PATH, &info) {
+    let path = match get_buffered_filename() {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(format!("{}", e));
+        }
+    };
+    match write_buffered_file(&path, &info) {
         Ok(_) => (),
         Err(e) => {
             return Err(format!("{}", e));
@@ -99,15 +128,22 @@ fn get_new_internet_info() -> Result<Fast, String> {
 }
 
 fn get_buffered_internet_info() -> Result<Fast, String> {
-    let file = match fs::read_to_string(BUFFER_FILE_PATH) {
-        Ok(f) => f,
+    let path = match get_buffered_filename() {
+        Ok(p) => p,
         Err(e) => {
             return Err(format!("{}", e));
         }
     };
-    let info = match toml::from_str(&file) {
+    let file_contents = match fs::read_to_string(&path) {
         Ok(f) => f,
         Err(e) => {
+            return Err(format!("Failed to read file: {}", e));
+        }
+    };
+    let info = match toml::from_str(&file_contents) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to parse TOML: {}", e);
             return Err(format!("{}", e));
         }
     };
@@ -121,52 +157,63 @@ struct Fast {
 }
 
 fn main() {
-    Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "[{}] {} - {}",
-                record.level(),
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                message
-            ))
-        })
-        .chain(fern::log_file("/tmp/output.log").expect("Failed to open log file"))
-        .apply()
-        .expect("Failed to initialize logger");
-    // Check if there's an up to date buffered file
-    let info = match get_seconds_since_file_modified(BUFFER_FILE_PATH) {
-        Ok(elapsed) => {
-            match elapsed {
-                0..=86400 => {
-                    info!("Using buffered file: elapse = {}", elapsed);
-                    let info = match get_buffered_internet_info() {
-                        Ok(f) => f,
-                        Err(e) => {
-                            error!("{}", e);
-                            return;
-                        }
-                    };
-                    info
-                }
-                _ => {
-                    info!("Buffered file is out of date");
-                    let info = match get_new_internet_info() {
-                        Ok(f) => f,
-                        Err(e) => {
-                            error!("{}", e);
-                            return;
-                        }
-                    };
-                    info
-                }
-            }
+    let logfile = FileAppender::builder()
+        .encoder(Box::new(PatternEncoder::new(
+            "{d(%Y-%m-%d %H:%M:%S)} [{t} {l} {M}:{L}] - {m}{n}",
+        )))
+        .build("/tmp/polybar-internet-speed.log")
+        .unwrap();
+    let config = Config::builder()
+        .appender(Appender::builder().build("logfile", Box::new(logfile)))
+        .build(
+            Root::builder()
+                .appender("logfile")
+                .build(log::LevelFilter::Info),
+        )
+        .unwrap();
+    let _handle = log4rs::init_config(config).unwrap();
+    let path = match get_buffered_filename() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("{}", e);
+            return;
         }
+    };
+    // Check if there's an up to date buffered file
+    let info = match get_seconds_since_file_modified(&path) {
+        Ok(elapsed) => match elapsed {
+            0..=86400 => {
+                info!("Using buffered file: elapse = {}", elapsed);
+                let info = match get_buffered_internet_info() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        error!("{}", e);
+                        return;
+                    }
+                };
+                info
+            }
+            _ => {
+                info!("Buffered file is out of date");
+                let info = match get_new_internet_info() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        error!("{}", e);
+                        return;
+                    }
+                };
+                info
+            }
+        },
         Err(e) => {
             info!("Buffered file doesn't exist");
             let info = match get_new_internet_info() {
                 Ok(i) => i,
                 Err(e2) => {
-                    error!("File didn't exist: Error: {}. Tried to create it: Error: {}", e, e2);
+                    error!(
+                        "File didn't exist: Error: {}. Tried to create it: Error: {}",
+                        e, e2
+                    );
                     return;
                 }
             };
@@ -179,7 +226,6 @@ fn main() {
         51..=150 => r#"%{F#f9dd04}%{F-}"#,
         _ => r#"%{F#d60606}%{F-}"#,
     };
-    
 
     println!("{icon} {} ms  {} Mbps", info.latency, info.downloadSpeed);
 }
